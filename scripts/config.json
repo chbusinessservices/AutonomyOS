@@ -1,0 +1,15 @@
+{
+  "_comment": "Weekly sweep scope for the GitHub Actions cron (.github/workflows/lead-sweep.yml). CLI flags override these (--cities/--niches/--limit/--batch). Add cities/niches here to grow the machine's weekly reach.",
+  "cities": [
+    "San Antonio, TX",
+    "Fort Worth, TX"
+  ],
+  "niches": [
+    "Junk Removal",
+    "Roofing",
+    "HVAC"
+  ],
+  "limit": 40,
+  "audit": true,
+  "includeGood": false
+}

@@ -21,6 +21,17 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 
+// Shared parsing rules — see db/normalize.js. Both this seeder and
+// scripts/extract-leads.js (Google Maps sweeps) use the same normalizers so
+// phone/website/email/city/status rules stay in one place.
+const {
+  normalizePhone,
+  normalizeWebsite,
+  normalizeEmail,
+  normalizeCity,
+  classifyWebsiteStatus,
+} = require('./normalize');
+
 const ROOT = path.join(__dirname, '..');
 const DATA_DIR = path.join(ROOT, 'data');
 
@@ -103,58 +114,18 @@ function parseDetailedEntries(md) {
 }
 
 // ---------------------------------------------------------------------------
-// Normalization
+// Normalization (shared)
+//
+// The functions below live in db/normalize.js — the single source of truth
+// for parsing rules (also imported by scripts/extract-leads.js). They are
+// re-exported here for backward compatibility with earlier importers.
 // ---------------------------------------------------------------------------
 
-// "(512) 615-8256" → "+15126158256" (US/CA). NULL when no digits.
-function normalizePhone(raw) {
-  if (!raw) return null;
-  const digits = raw.replace(/\D/g, '');
-  if (!digits) return null;
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  return null; // unexpected format — flag via warnings instead of corrupting
-}
-
-// Keep the audited URL as-is; "none" / "n/a" → NULL. Hunter's notes like
-// "(Wix)" or "(down — fetch returns empty)" ride along after the URL — strip
-// the trailing parenthetical so only the URL is stored.
-function normalizeWebsite(raw) {
-  if (!raw) return null;
-  let s = raw.trim();
-  if (!s || /^(none|n\/a|no website)$/i.test(s)) return null;
-  s = s.replace(/\s*\(.*?\)\s*$/, '').trim(); // trailing audit note
-  return s || null;
-}
-
-function normalizeEmail(raw) {
-  if (!raw) return null;
-  let s = raw.trim().toLowerCase();
-  if (!s || /^n\/?a$/i.test(s)) return null;
-  s = s.replace(/\s*\(.*?\)\s*$/, '').trim(); // trailing audit note
-  return s || null;
-}
-
-// "Raleigh, NC (Cary)" → "Raleigh, NC". Keeps "City, ST" shape.
-function normalizeCity(raw) {
-  if (!raw) return null;
-  return raw.replace(/\s*\(.*?\)\s*/g, '').trim();
-}
-
-// Map the summary's free-text status column to the closed domain:
-//   "No website" / "Facebook only" / social-only → 'none'
-//   everything else (template, down, outdated, no form, …) → 'weak'
-//   'good' is reserved — a converting site is never in these target lists.
-function classifyWebsiteStatus(statusText, websiteUrl) {
-  const t = (statusText || '').toLowerCase();
-  if (/no website|facebook only|social[- ]only/.test(t)) return 'none';
-  if (websiteUrl) return 'weak';
-  return 'none';
-}
-
-// ---------------------------------------------------------------------------
-// Seeding
-// ---------------------------------------------------------------------------
+module.exports = {
+  parseBatchFile, parseSummaryTable, parseDetailedEntries,
+  normalizePhone, normalizeWebsite, normalizeEmail, normalizeCity,
+  classifyWebsiteStatus,
+};
 
 function parseBatchFile(file, batch, warnings) {
   const md = fs.readFileSync(path.join(DATA_DIR, file), 'utf8');
@@ -290,10 +261,6 @@ async function main() {
     await pool.end();
   }
 }
-
-module.exports = { parseBatchFile, parseSummaryTable, parseDetailedEntries,
-  normalizePhone, normalizeWebsite, normalizeEmail, normalizeCity,
-  classifyWebsiteStatus };
 
 if (require.main === module) {
   main().catch((err) => {

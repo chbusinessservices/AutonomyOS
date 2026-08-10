@@ -1,0 +1,17 @@
+{
+  "name": "ch-lead-extraction",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Phase 2: automated lead extraction — headless Google Maps sweeps (Playwright) upserting leads into the Neon pipeline",
+  "scripts": {
+    "extract": "node extract-leads.js",
+    "extract:dry": "node extract-leads.js --dry-run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "pg": "^8.13.1",
+    "playwright": "^1.49.0"
+  }
+}

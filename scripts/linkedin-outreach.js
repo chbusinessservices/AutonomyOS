@@ -45,6 +45,12 @@
 //   LINKEDIN_DRY_RUN=1    kill switch: forces dry-run
 //   LINKEDIN_STATE_FILE   override the state-file path
 //   PLAYWRIGHT_BROWSERS_PATH  where Playwright browsers live (see README)
+//   DEEPSEEK_API_KEY      OPTIONAL Phase 4: enables AI personalization of the
+//                         message (scripts/ai.js). Only used in REAL mode —
+//                         dry-run always uses the deterministic templates,
+//                         so previews stay fast, free, and stable. Without
+//                         the key (or on API error/timeout) the rendered
+//                         template is used — the run never fails on AI.
 //
 // Exit codes: 0 = ran (even if some sends failed), 1 = fatal (no creds /
 //             missing DATABASE_URL / DB down), 2 = bad usage.
@@ -278,7 +284,23 @@ async function main() {
     const pending = await core.fetchPendingLeads(q, statusFilter, fetchN);
     const allowed = core.planSize(remaining, opts.limit);
     const targets = pending.slice(0, allowed);
-    plan = await core.buildPlan(targets, templates.templates, { noteMaxChars: templates.note_max_chars });
+
+    // --- Phase 4 hook: AI personalization (scripts/ai.js). Only in real
+    //     mode with a key — dry-run always renders deterministic templates
+    //     (fast, free, stable previews). The hook is called per lead as
+    //     (lead, message) => message and every failure inside it falls back
+    //     to the rendered template, so this can never break a run. ---
+    const planOpts = { noteMaxChars: templates.note_max_chars };
+    if (process.env.DEEPSEEK_API_KEY && !dryRun) {
+      const ai = require('./ai');
+      planOpts.personalize = (lead, msg) => ai.personalizeLead(lead, msg, { verbose: opts.verbose });
+      console.log('                  AI personalization: ON (DEEPSEEK_API_KEY set)');
+    } else if (dryRun) {
+      console.log('                  AI personalization: off (dry-run — deterministic templates)');
+    } else {
+      console.log('                  AI personalization: off (no DEEPSEEK_API_KEY — deterministic templates)');
+    }
+    plan = await core.buildPlan(targets, templates.templates, planOpts);
 
     if (dryRun) {
       console.log(`\n================= ACTION PLAN (dry run) =================`);

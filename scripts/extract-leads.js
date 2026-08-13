@@ -236,6 +236,19 @@ async function dismissConsent(page) {
   }
 }
 
+// Race any promise against a hard timer so a wedged Chrome can never stall the
+// sweep (observed: ctx.close()/browser.close() hanging on a stuck Maps page —
+// the CDP reply never comes, no socket timeout applies).
+function withHardTimeout(promise, ms, label) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 async function extractCombo(browser, city, niche, limit, verbose) {
   const ctx = await browser.newContext({
     viewport: { width: 1366, height: 900 },
@@ -273,7 +286,9 @@ async function extractCombo(browser, city, niche, limit, verbose) {
     if (verbose) console.log(`  [extract] ${city} / ${niche}: ${cards.length} cards`);
     return cards;
   } finally {
-    await ctx.close();
+    await withHardTimeout(ctx.close(), 10000, 'context close').catch((err) => {
+      console.error(`  [ctx] ${err.message} — continuing (results already extracted)`);
+    });
   }
 }
 
@@ -288,24 +303,40 @@ const MOBILE_UA =
 function fetchHead(url) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http;
+    // HARD overall deadline — this is the fix for the Phase 2 audit stall.
+    // Node's `timeout` socket option (the old approach) only fires on socket
+    // IDLE *after* connect, so it NEVER fires during TCP connect/DNS: an
+    // unreachable host that silently drops SYNs (dead server, firewall,
+    // no-route IP) stalled the audit worker — and with it the whole sweep —
+    // forever. AbortSignal.timeout aborts the request at ANY phase (DNS and
+    // connect included), and the timer below is a belt-and-braces backstop so
+    // this promise settles within AUDIT_TIMEOUT no matter what. A failed
+    // audit degrades gracefully: auditUrl returns {ok:false} → the lead gets
+    // classified 'weak' and the sweep moves on (partial results kept).
+    const deadline = setTimeout(() => {
+      req.destroy(new Error(`audit deadline exceeded (${AUDIT_TIMEOUT}ms connect+headers)`));
+    }, AUDIT_TIMEOUT);
+    const settle = (fn, v) => { clearTimeout(deadline); fn(v); };
     const req = mod.get(url, {
       headers: {
         'User-Agent': MOBILE_UA,
         Accept: 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.9',
       },
-      timeout: AUDIT_TIMEOUT,
+      signal: AbortSignal.timeout(AUDIT_TIMEOUT),
     }, (res) => {
       const chunks = [];
       res.on('data', (c) => {
         chunks.push(c);
-        if (Buffer.concat(chunks).length > 200000) { req.destroy(); resolve({ status: res.statusCode, len: 200001, headers: res.headers }); }
+        if (Buffer.concat(chunks).length > 200000) {
+          req.destroy();
+          settle(resolve, { status: res.statusCode, len: 200001, headers: res.headers });
+        }
       });
-      res.on('end', () => resolve({ status: res.statusCode, len: Buffer.concat(chunks).length, headers: res.headers }));
-      res.on('error', (err) => reject(err));
+      res.on('end', () => settle(resolve, { status: res.statusCode, len: Buffer.concat(chunks).length, headers: res.headers }));
+      res.on('error', (err) => settle(reject, err));
     });
-    req.on('timeout', () => { req.destroy(new Error('timeout')); });
-    req.on('error', (err) => reject(err));
+    req.on('error', (err) => settle(reject, err));
   });
 }
 
@@ -330,7 +361,7 @@ async function auditWebsite(url) {
   if (TEMPLATE_HOST_RE.test(host)) return 'DIY template site';
   if (CHEAP_TLD_RE.test(host)) return 'cheap-TLD template site';
   const r = await auditUrl(url);
-  if (!r.ok) return `website down/broken (fetch status ${r.status ?? 'error'})`;
+  if (!r.ok) return `website down/broken (${r.reason || `fetch status ${r.status}`})`;
   if (r.len < 300) return 'placeholder/broken site (tiny page)';
   return 'good';
 }
@@ -466,8 +497,10 @@ async function main() {
   const auditWorker = async () => {
     while (auditQueue.length) {
       const { url, done } = auditQueue.shift();
+      const t0 = Date.now();
       let v;
       try { v = await auditWebsite(url); } catch (e) { v = 'website down/broken (audit error)'; }
+      if (cfg.verbose) console.log(`    [audit] ${url} → ${v} (${Date.now() - t0}ms)`);
       auditVerdicts.set(url, v);
       done();
     }
@@ -491,6 +524,7 @@ async function main() {
   const failures = [];
   const perCity = new Map();
   const dryRows = [];
+  let browserWedge = false;
 
   try {
     for (const city of cfg.cities) {
@@ -560,7 +594,10 @@ async function main() {
       }
     }
   } finally {
-    await browser.close();
+    await withHardTimeout(browser.close(), 8000, 'browser close').catch((err) => {
+      console.error(`  [browser] ${err.message}`);
+      browserWedge = true; // wedged Chrome keeps its CDP pipe open → force exit below
+    });
     if (pool) await pool.end();
   }
 
@@ -588,10 +625,20 @@ async function main() {
   if (failures.length && (!dryRows.length || (totals.new + totals.updated + totals.unchanged) === 0)) {
     process.exitCode = 1;
   }
+
+  // A wedged Chrome process holds the CDP pipes open, which would keep this
+  // process alive forever after main() returns — force the exit instead.
+  if (browserWedge) process.exit(process.exitCode || 0);
 }
 
-main().catch((err) => {
-  console.error('Sweep failed:', err.message);
-  console.error(err.stack);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('Sweep failed:', err.message);
+    console.error(err.stack);
+    process.exit(1);
+  });
+}
+
+// Export the audit primitives so tests/harnesses can exercise the timeout
+// behaviour directly (requiring this file no longer runs the sweep).
+module.exports = { fetchHead, auditUrl, auditWebsite };

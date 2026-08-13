@@ -512,10 +512,6 @@ async function main() {
       if (cached) return resolve(cached);
       auditQueue.push({ url, done: () => resolve(auditVerdicts.get(url)) });
     });
-  const workers = [];
-  if (cfg.audit) {
-    for (let i = 0; i < cfg.concurrency; i++) workers.push(auditWorker());
-  }
 
   const browser = await chromium.launch({ headless: true });
   const pool = opts.dryRun ? null : connectPool();
@@ -559,7 +555,14 @@ async function main() {
               .find((h) => !SOCIAL_HOST_RE.test(hostOf(h)));
             if (web && !uniques.includes(web)) uniques.push(web);
           }
-          await Promise.all(uniques.map(withAudit));
+          // Queue the URLs FIRST, then start the workers. auditWorker exits as
+          // soon as the queue is empty, so starting workers before work exists
+          // (the pre-fix behaviour) deadlocked the drain forever — withAudit's
+          // done() could never be called and the sweep stalled right here.
+          const auditPromises = uniques.map(withAudit);
+          const workers = [];
+          for (let i = 0; i < cfg.concurrency; i++) workers.push(auditWorker());
+          await Promise.all(auditPromises);
           await Promise.all(workers); // drain audit queue
         }
 

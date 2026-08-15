@@ -60,9 +60,11 @@ function pickTemplate(templates, lead) {
 }
 
 // Build the full action plan: one entry per lead with the chosen variant and
-// the rendered message. `personalize` is the Phase 4 AI hook — today it is
-// the identity (deterministic templates); Phase 4 swaps in an LLM call behind
-// the same signature (lead, message) => message without touching this loop.
+// the rendered message. `personalize` is the Phase 4 AI hook — the default is
+// the identity (deterministic templates); linkedin-outreach.js wires in
+// ai.personalizeLead() behind the same signature (lead, message) => message
+// when DEEPSEEK_API_KEY is set and the run is not dry-run, so this loop stays
+// untouched by the AI layer.
 async function buildPlan(leads, templates, opts) {
   const maxChars = (opts && opts.noteMaxChars) || 300;
   const personalize = (opts && opts.personalize) || (async (_lead, msg) => msg);

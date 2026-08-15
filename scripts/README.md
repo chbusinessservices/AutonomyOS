@@ -234,3 +234,79 @@ restricted or banned, and the owner has not yet decided automated vs manual.
 This phase ships the engine **disabled by default** (dry-run only, no creds).
 Enable it only after: (1) the owner explicitly opts in, (2) selectors are
 verified live, and (3) the team accepts the account-ban risk on record.
+
+---
+
+# AI personalization + negotiation (Phase 4)
+
+The machine's brain: direct DeepSeek API calls that (a) rewrite the outreach
+pitch for each lead and (b) answer inbound replies — with the deterministic
+templates as a guaranteed fallback. It lives in [`ai.js`](./ai.js), wired into
+the Phase 3 engine's `personalize(lead, message)` hook in `linkedin-core.js`.
+
+```
+scripts/
+ ai.js                        DeepSeek client: personalizeLead() + generateReply()
+ test/ai.test.js              Unit tests — ALL API calls mocked, no network
+```
+
+## Key setup (business secret)
+
+- The owner's key goes in `DEEPSEEK_API_KEY` — environment variable or n8n/CI
+  secret only, **never** committed. No key file is read, no `.env` entry is
+  required to run (everything falls back).
+- On this machine: `export DEEPSEEK_API_KEY=sk-...` before a real run. The
+  canonical secret file for the Neon URL is
+  `/home/team/shared/.neon-db-url` (DB only) — the AI key has no shared file
+  yet; the owner will provide it as a business secret when they're ready.
+- Real API shape (for reference): `POST https://api.deepseek.com/chat/completions`,
+  `Authorization: Bearer $DEEPSEEK_API_KEY`, body
+  `{model: "deepseek-chat", messages: [...], max_tokens: 150, temperature: 0.7}`,
+  completion read from `choices[0].message.content`.
+
+## Behavior without a key (and on any AI failure)
+
+| Situation | What happens |
+| --- | --- |
+| No `DEEPSEEK_API_KEY` | Deterministic templates / canned replies, exactly Phase 3 behavior. `personalizeLead` returns the rendered template; `generateReply` classifies by keywords (interested / objection / price_question / not_interested / other) and returns a canned reply. |
+| API error (4xx/5xx, network) | Same fallback. Logged with `[ai]` when `--verbose`. |
+| Timeout | Hard ~10s deadline (`AbortSignal.timeout` + a belt-and-braces timer) — the run can never hang on the API. |
+| Malformed / empty completion | Same fallback. |
+
+`personalizeLead` and `generateReply` **never throw** — every failure path
+returns the rendered template / canned reply. Tests prove all of it with a
+mocked `fetch` (`ai.setFetchImpl()`), so `npm test` runs offline.
+
+## How it's wired
+
+- `linkedin-outreach.js` calls `core.buildPlan(..., { personalize })` with
+  `ai.personalizeLead` **only when** `DEEPSEEK_API_KEY` is set **and** the run
+  is not `--dry-run`. Dry-run previews are therefore always fast, free, and
+  deterministic — the AI only fires on real sends.
+- `generateReply(conversation, lead)` is the inbound-reply arm for the
+  negotiation loop (n8n / webhook stage). `conversation` is `{tail}` or an
+  array of messages; it returns `{intent, reply}` where `intent` ∈
+  `interested | objection | price_question | not_interested | other`.
+
+## Cost note
+
+DeepSeek bills per token (very cheap — a personalization call is ~300–500
+tokens, well under a tenth of a cent at current rates). Still: it's the
+owner's paid key, so the machine is conservative by design — AI fires only
+per real outreach send (≤15/day cap) and per inbound reply, never in dry-run,
+never in tests (mocked), never on retries of a failed API call. A full
+15-lead day is a rounding error on the invoice; a runaway loop cannot happen
+because every call is bounded by the hard deadline and the fallback always
+produces a message.
+
+## Run the tests
+
+```sh
+cd scripts
+npm test        # Phase 3 + Phase 4 suites (ai tests are fully offline)
+```
+
+To preview AI behavior without a real key, set a bogus one and run a dry-run —
+the wiring still skips the API (dry-run rule), and a direct call falls back
+after the API error. The fallback path is proven end-to-end by
+`test/ai.test.js`.

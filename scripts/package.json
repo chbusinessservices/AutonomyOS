@@ -1,14 +1,14 @@
 {
   "name": "ch-pipeline-scripts",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "CH pipeline scripts — Phase 2 lead extraction (Playwright Maps sweeps) + Phase 3 LinkedIn outreach engine (capped, paced, dry-run-first), both writing to the Neon pipeline",
+  "description": "CH pipeline scripts — Phase 2 lead extraction (Playwright Maps sweeps), Phase 3 LinkedIn outreach engine (capped, paced, dry-run-first), Phase 4 AI personalization + negotiation (DeepSeek, template-fallback-safe), all writing to the Neon pipeline",
   "scripts": {
     "extract": "node extract-leads.js",
     "extract:dry": "node extract-leads.js --dry-run",
     "outreach": "node linkedin-outreach.js",
     "outreach:dry": "node linkedin-outreach.js --dry-run",
-    "test": "node --test test/linkedin-outreach.test.js"
+    "test": "node --test test/linkedin-outreach.test.js test/ai.test.js"
   },
   "engines": {
     "node": ">=18"

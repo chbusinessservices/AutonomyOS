@@ -1,0 +1,18 @@
+{
+  "_comment": "Phase 3 LinkedIn outreach message templates. Deterministic — NO LLM in this phase (AI personalization lands in Phase 4 behind the personalize() hook in linkedin-core.js). Placeholders: {{business_name}} {{city}} {{niche}} {{website_status}}. {{website_status}} renders a friendly phrase ('is missing entirely' | \"isn't converting visitors into calls yet\" | 'is up and running'). Keep every message under note_max_chars (300 — LinkedIn's connection-note limit); renderTemplate truncates defensively. Templates are honest, low-pressure outreach: no urgency, no fake scarcity.",
+  "note_max_chars": 300,
+  "templates": [
+    {
+      "id": "free-ideas",
+      "text": "Hi {{business_name}}, I help {{niche}} businesses in {{city}} win more customers online. Your online presence {{website_status}} — I'd love to send 3 free ideas to get you more calls. Open to a chat?"
+    },
+    {
+      "id": "found-you",
+      "text": "Hi {{business_name}}, I found you while researching {{niche}} companies in {{city}}. Your online presence {{website_status}}, so I thought a few free website ideas might help you win more jobs. Interested?"
+    },
+    {
+      "id": "simple-sites",
+      "text": "Hi {{business_name}}, I build simple websites for {{niche}} businesses in {{city}} that book jobs automatically. Since your online presence {{website_status}}, I'd love to show you what that could look like. Open to a quick chat?"
+    }
+  ]
+}

@@ -125,3 +125,112 @@ cron run (below) uses this file with no overrides. On-demand runs pass
   schema allows NULL). Phones are the outreach channel.
 - Node ≥ 18 (tested on 20/22). Memory-light: one browser context at a time,
   audits capped at 3 parallel fetches.
+
+---
+
+# LinkedIn outreach engine (Phase 3)
+
+The machine's outbound arm: picks fresh leads from Neon (`status='new'`,
+oldest first) and sends a personalized LinkedIn connection request (or DM
+when already connected) with human-mimicking pacing and a **hard daily cap**.
+Every successful send flips the lead to `'contacted'` and appends a
+`lead_events('outreach_sent')` row in one transaction.
+
+```
+scripts/
+ linkedin-outreach.js   Playwright runner (search → connect/DM → cap → events)
+ linkedin-core.js       Testable core: template rendering, cap state, SQL helpers
+ linkedin-templates.json  Message variants + placeholders (deterministic, no LLM)
+ linkedin-config.json   cap 15, delay 15–45s, status filter 'new'
+ test/linkedin-outreach.test.js  Unit tests (node --test)
+```
+
+## Status: dry-run verified, real mode gated
+
+- No LinkedIn credentials exist and the owner has **not** decided
+  automated-vs-manual — so this phase ships code + verified dry-run + unit
+  tests only. The script **refuses** real mode without credentials.
+- Never attempt a real login/send until the owner decides and the selectors in
+  `linkedin-outreach.js` (`LI_SELECTORS`) are verified against live LinkedIn —
+  they are best-effort scaffolding and WILL drift.
+
+## Configure
+
+Copy `.env.example` → `.env` (never commit real values) or export:
+
+| Env | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Neon connection string (required — dry-run reads the DB too). On this machine: `export DATABASE_URL=$(cat /home/team/shared/.neon-db-url)` |
+| `LINKEDIN_EMAIL` / `LINKEDIN_PASSWORD` | Real-mode creds (env only, never in code) |
+| `LINKEDIN_SESSION_DIR` | Alternative: path to a persistent browser context you logged into once by hand |
+| `LINKEDIN_DAILY_CAP` | Override the daily cap (default 15 from config) |
+| `LINKEDIN_DRY_RUN=1` | **Kill switch** — forces dry-run no matter what |
+| `LINKEDIN_STATE_FILE` | Override the cap-state file path |
+
+Defaults live in [`linkedin-config.json`](./linkedin-config.json): cap 15,
+delay 15–45s between actions, 2–5s before Send, status filter `new`,
+`headless: true`. Precedence: CLI flag > env > config.
+
+## Run
+
+```sh
+npm install          # scripts/ — playwright + pg only
+npm test             # unit tests (rendering, cap logic, SQL helpers)
+export DATABASE_URL=$(cat /home/team/shared/.neon-db-url)
+
+# preview the plan — safe, no login, no writes, still respects the cap
+npm run outreach:dry -- --limit 3        # or: node linkedin-outreach.js --dry-run --limit 3
+
+# real mode (only after owner decision + selector verification!)
+export LINKEDIN_EMAIL=... LINKEDIN_PASSWORD=...
+node linkedin-outreach.js                 # default: cap 15, status 'new'
+node linkedin-outreach.js --limit 3       # smoke: at most 3, still ≤ cap
+```
+
+## Cap semantics (the non-negotiable)
+
+- Hard per-day budget, default 15 (LinkedIn-safe band is 15–20/day).
+- Persisted per UTC day in `scripts/.linkedin-run-state.json` (gitignored).
+- **Crash-proof:** the run also counts today's `outreach_sent` rows in the DB
+  and uses the MAX of the two, so a crash between the DB write and the state
+  file write (or a deleted state file) can never push past the cap.
+- The state file is rewritten after **every** successful send — a mid-run
+  crash resumes from the true count on the next run.
+- A new UTC day resets the budget; held-back leads are picked up oldest-first.
+- A failed send (no matching profile, LinkedIn hiccup) does **not** consume a
+  slot — the lead stays `'new'` for the next run. Retry/backoff is per-action
+  (config `retries`, `retry_base_ms`).
+
+## Message templates
+
+[`linkedin-templates.json`](./linkedin-templates.json) — 3 variants, plain
+placeholder substitution, no LLM in this phase. Placeholders:
+`{{business_name}}`, `{{city}}`, `{{niche}}`, and `{{website_status}}` which
+renders a friendly phrase from the audit domain (`'none'` → "is missing
+entirely", `'weak'` → "isn't converting visitors into calls yet", `'good'` →
+"is up and running"). The variant is picked deterministically by lead id
+(same lead → same variant on re-runs). Messages are truncated defensively at
+300 chars (LinkedIn's connection-note limit).
+
+**Phase 4 hook:** `buildPlan()` in `linkedin-core.js` calls
+`personalize(lead, message)` — today the identity. Swap in a DeepSeek/OpenAI
+call behind that signature for AI personalization without touching the action
+loop, cap logic, or SQL.
+
+## Account-safety notes
+
+- Keep `daily_cap` at 15–20. The 15–45s random delays between actions and the
+  paced typing before Send are what keep the account from looking like a bot.
+- One browser session at a time; no concurrency. Runs take a while by design
+  (15 leads × ~30s pacing ≈ 8–10 min).
+- The script only visits the profile it intends to message — no bulk scraping
+  of result lists beyond the first 5 candidates.
+
+## ⚠ LinkedIn ToS risk
+
+Automated outreach violates LinkedIn's User Agreement (their anti-bot and
+anti-scraping terms). Real-mode use carries real risk of the account being
+restricted or banned, and the owner has not yet decided automated vs manual.
+This phase ships the engine **disabled by default** (dry-run only, no creds).
+Enable it only after: (1) the owner explicitly opts in, (2) selectors are
+verified live, and (3) the team accepts the account-ban risk on record.

@@ -1,0 +1,14 @@
+{
+  "_comment": "Phase 3 LinkedIn outreach defaults. Precedence: CLI flag > env var (LINKEDIN_DAILY_CAP, LINKEDIN_DRY_RUN, LINKEDIN_STATE_FILE, LINKEDIN_EMAIL, LINKEDIN_PASSWORD, LINKEDIN_SESSION_DIR) > this file. state_file is relative to scripts/ unless absolute. Account-safety: keep daily_cap at 15–20, delay_min/max_sec in the 15–45s band — this is what makes the machine look human and keeps ban risk manageable (see README).",
+  "daily_cap": 15,
+  "status_filter": "new",
+  "delay_min_sec": 15,
+  "delay_max_sec": 45,
+  "send_delay_min_sec": 2,
+  "send_delay_max_sec": 5,
+  "note_max_chars": 300,
+  "retries": 2,
+  "retry_base_ms": 5000,
+  "headless": true,
+  "state_file": ".linkedin-run-state.json"
+}

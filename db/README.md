@@ -66,6 +66,9 @@ SELECT count(*) FROM leads WHERE email IS NOT NULL;           -- published email
 - New lead (GitHub Actions cron / n8n `lead-created`): insert `leads` +
   `lead_events(lead_id, 'lead_created', '{"source":"github-actions"}')` in
   one transaction.
+  - The Phase 2 extractor (`../scripts/extract-leads.js`, weekly Google Maps
+    sweep) does exactly this; it and `seed.js` share all parsing rules via
+    `db/normalize.js`.
 - State transition: `UPDATE leads SET status = $1 WHERE id = $2` then append
   `lead_events(..., 'status_changed', '{"from":…,"to":…}')`.
 - Stripe webhook `payment-received`: set `status='closed_won'` and log

@@ -1,0 +1,113 @@
+# Lead sweep — weekly automated lead extraction (Phase 2 continuous lead-gen)
+#
+# Every Monday (and on-demand via workflow_dispatch) a headless Chromium
+# (Playwright) sweeps Google Maps for the cities/niches in scripts/config.json,
+# extracts businesses with missing/weak websites, and upserts them into the
+# Neon `leads` table (+ `lead_created` event per new lead). No human involved.
+#
+# Schedule mapping (GitHub Actions cron runs in UTC — this CANNOT be set to a
+# local timezone, only shifted):
+#   cron '0 11 * * 1'  = Monday 11:00 UTC
+#                      = Monday 06:00 US Central Daylight Time (summer, UTC-5)
+#                      = Monday 05:00 US Central Standard Time (winter, UTC-6)
+# To move it, change BOTH the cron expression here and the note above.
+# On-demand runs ignore the schedule entirely (use the workflow inputs).
+#
+# Required repository secret: DATABASE_URL (the Neon connection string; see
+# scripts/.env.example — never commit it to the repo).
+
+name: Lead sweep (weekly)
+
+on:
+  schedule:
+    - cron: '0 11 * * 1' # Monday 11:00 UTC ≈ 06:00 US Central (see header)
+  workflow_dispatch:
+    inputs:
+      cities:
+        description: 'Comma-separated cities, e.g. "San Antonio, TX, Dallas, TX" (default: scripts/config.json)'
+        required: false
+        type: string
+      niches:
+        description: 'Comma-separated niches, e.g. "Junk Removal, Roofing" (default: scripts/config.json)'
+        required: false
+        type: string
+      limit:
+        description: 'Max businesses per city+niche combo (smoke test: 3)'
+        required: false
+        default: '40'
+        type: string
+      batch:
+        description: 'source_batch label (default: sweep-YYYYMMDD)'
+        required: false
+        default: 'sweep-manual'
+        type: string
+      include_good:
+        description: 'Also upsert businesses whose site audits as converting (default: skip)'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: lead-sweep
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+
+      - name: Verify DATABASE_URL secret is configured
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL repository secret is not set — add the Neon connection string (see scripts/.env.example)."
+            exit 1
+          fi
+          echo "DATABASE_URL secret: configured"
+
+      - name: Install dependencies
+        working-directory: scripts
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: scripts
+        run: npx playwright install --with-deps chromium
+
+      - name: Run lead sweep
+        id: sweep
+        working-directory: scripts
+        env:
+          CITIES: ${{ inputs.cities || '' }}
+          NICHES: ${{ inputs.niches || '' }}
+          LIMIT: ${{ inputs.limit || '40' }}
+          BATCH: ${{ inputs.batch || '' }}
+          INCLUDE_GOOD: ${{ inputs.include_good || 'false' }}
+        run: |
+          set -o pipefail
+          ARGS=()
+          [ -n "$CITIES" ] && ARGS+=(--cities "$CITIES")
+          [ -n "$NICHES" ] && ARGS+=(--niches "$NICHES")
+          [ -n "$LIMIT" ] && ARGS+=(--limit "$LIMIT")
+          [ -n "$BATCH" ] && ARGS+=(--batch "$BATCH")
+          if [ "$INCLUDE_GOOD" = "true" ]; then ARGS+=(--include-good); fi
+          echo "Running: node extract-leads.js ${ARGS[*]}"
+          node extract-leads.js "${ARGS[@]}" 2>&1 | tee /tmp/lead-sweep.log
+
+      - name: Post run summary
+        if: always()
+        run: |
+          tail -60 /tmp/lead-sweep.log > "$GITHUB_STEP_SUMMARY"

@@ -310,3 +310,114 @@ To preview AI behavior without a real key, set a bogus one and run a dry-run —
 the wiring still skips the API (dry-run rule), and a direct call falls back
 after the API error. The fallback path is proven end-to-end by
 `test/ai.test.js`.
+
+# Stripe payments arm (Phase 5)
+
+The machine's **revenue loop**: a lead pays → the webhook flips the lead to
+`closed_won` automatically. No human in the middle.
+
+```
+payment.js  ──sendPaymentLink──▶  lead gets a buy URL (payment link)
+      │                              (?client_reference_id=<leadId>)
+      ▼
+lead clicks, pays on Stripe  ──▶  Stripe POSTs checkout.session.completed
+                                   → /webhook/stripe (signed)
+      ▼
+stripe-webhook.js verifies Stripe-Signature (HMAC-SHA256, t=…&v1=…),
+resolves the lead, UPDATEs leads.status='closed_won',
+INSERTs lead_events(event_type='payment_received',
+                    payload {session_id, amount_total, currency, paid_at})
+```
+
+## Files
+
+| File | Purpose |
+| --- | --- |
+| `stripe-core.js` | Shared logic: signature verification (node:crypto, no SDK), lead resolution, the closed-won DB transaction, payment-link event helpers |
+| `stripe-webhook.js` | Zero-dependency HTTP server: `POST /webhook/stripe` + `GET /health`, graceful SIGTERM shutdown |
+| `payment.js` | `sendPaymentLink(lead, productKey)` — builds the buy URL from env, logs an idempotent `payment_link_sent` event; also a CLI (`--lead <id> [--product <key>]`) |
+| `test/stripe.test.js` | Offline unit + HTTP tests plus a real-Neon SQL test (BEGIN…ROLLBACK) |
+
+## How to connect (owner actions, in order)
+
+1. **Create products / payment links** in the Stripe dashboard (Payment
+   Links → create one per offer: Premium Site, Starter Site, AI Receptionist).
+   Each gets a `https://buy.stripe.com/…` URL.
+2. **Set the business secrets** (env-only — never commit):
+   - `STRIPE_PAYMENT_LINK_PREMIUM_SITE`, `_STARTER_SITE`, `_AI_RECEPTIONIST`
+     (plus `STRIPE_PAYMENT_LINK_DEFAULT` as fallback) — the buy URLs.
+   - `STRIPE_WEBHOOK_SECRET` — created in step 3.
+3. **Register the webhook endpoint** in the Stripe dashboard (Developers →
+   Webhooks → Add endpoint):
+   - Endpoint URL: `https://<this-machine-or-vps>/webhook/stripe`
+     (or n8n's `/webhook/payment-received` later — see below)
+   - Events: select **checkout.session.completed**
+   - Copy the **Signing secret** (`whsec_…`) → `STRIPE_WEBHOOK_SECRET`.
+4. **Run the handler**:
+   ```sh
+   cd scripts
+   export DATABASE_URL=$(cat /home/team/shared/.neon-db-url)   # work machine
+   export STRIPE_WEBHOOK_SECRET=whsec_...
+   node stripe-webhook.js            # listens on :8787 (STRIPE_WEBHOOK_PORT / --port)
+   curl -s localhost:8787/health     # → ok
+   ```
+   Verify a real flow with the Stripe CLI: `stripe listen --forward-to
+   localhost:8787/webhook/stripe` then complete a test checkout — the lead
+   flips to `closed_won` and a `payment_received` event row appears.
+
+## Sending a payment link
+
+```js
+const payment = require('./payment');
+const url = await payment.sendPaymentLink(lead, 'premium_site', { query });
+// → 'https://buy.stripe.com/xxx?client_reference_id=181'
+```
+or from the shell: `node scripts/payment.js --lead 181 --product premium_site`.
+
+The helper appends `?client_reference_id=<leadId>` to the buy URL — Stripe
+forwards that query parameter to the created checkout session, which is how
+the webhook knows who paid **without needing the Stripe API or a secret key**
+(payment links are static URLs). API-created checkout sessions can instead
+set `metadata.lead_id`; the webhook accepts both, `client_reference_id`
+first. The `payment_link_sent` event is idempotent per lead+product per UTC
+day — re-sending the same link never double-logs.
+
+## Event flow & response contract (why 200 vs 400 vs 500)
+
+| Situation | Response | Why |
+| --- | --- | --- |
+| Missing/invalid `Stripe-Signature`, malformed JSON | **400** | Permanent — Stripe stops retrying, correct |
+| Signed event, but not `checkout.session.completed` | **200** | Acknowledged, nothing to do |
+| Unknown / missing lead (bad or absent `client_reference_id`/`metadata.lead_id`) | **200** | Never 5xx a valid event — Stripe would retry forever |
+| Duplicate session (Stripe redelivery) | **200** | Deduped by `session_id`; no double event |
+| DB down / secret not configured on a **valid** event | **500** | Stripe retries with backoff — the event is good, give it another shot |
+
+## n8n (the eventual orchestrator)
+
+Per the blueprint, n8n will own orchestration. Two ways to use this phase:
+- **Forward**: n8n's `Webhook` node at `/webhook/payment-received` receives
+  the Stripe POST and forwards it unchanged (same body, same
+  `Stripe-Signature` header) to this handler — signature verification stays
+  here, n8n just routes.
+- **Replace**: n8n verifies the signature (its Stripe node supports webhook
+  verification) and does the `closed_won` + `payment_received` write itself
+  with a Postgres node; this handler becomes a fallback.
+
+Either way the schema contract is the same: `closed_won` status +
+`payment_received` event with `{session_id, amount_total, currency, paid_at}`.
+
+## Run the tests
+
+```sh
+cd scripts
+npm test        # Phase 3 + Phase 4 + Phase 5 suites
+```
+The Phase 5 SQL test (lead → closed_won → event row) runs against real Neon
+inside `BEGIN…ROLLBACK` (nothing survives) when `DATABASE_URL` is set, and is
+skipped otherwise; every other Phase 5 test is fully offline.
+
+## Secrets checklist
+
+- [ ] `STRIPE_WEBHOOK_SECRET` — whsec_… (business secret, env-only)
+- [ ] `STRIPE_PAYMENT_LINK_*` — buy URLs (env-only for consistency)
+- [ ] `DATABASE_URL` — lives at `/home/team/shared/.neon-db-url` on the work machine

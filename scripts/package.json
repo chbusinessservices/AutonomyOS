@@ -10,7 +10,7 @@
     "outreach:dry": "node linkedin-outreach.js --dry-run",
     "webhook": "node stripe-webhook.js",
     "payment:link": "node payment.js",
-    "test": "node --test test/linkedin-outreach.test.js test/ai.test.js test/stripe.test.js"
+    "test": "node --test test/linkedin-outreach.test.js test/ai.test.js test/stripe.test.js test/extract-parser.test.js"
   },
   "engines": {
     "node": ">=18"

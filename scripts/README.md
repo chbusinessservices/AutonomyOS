@@ -71,8 +71,8 @@ unchanged 3`.
 
 | Flag | Meaning |
 | --- | --- |
-| `--cities "A, B"` | override config cities (comma-separated) |
-| `--niches "X, Y"` | override config niches |
+| `--cities "San Antonio, TX \| Fort Worth, TX"` | override config cities (see multi-value note below) |
+| `--niches "Junk Removal \| Roofing"` | override config niches |
 | `--limit N` | max businesses per (city, niche) combo |
 | `--dry-run` | extract + classify only; print JSON rows, no DB |
 | `--batch NAME` | `source_batch` label (default `sweep-YYYYMMDD`) |
@@ -82,6 +82,23 @@ unchanged 3`.
 | `--retries N` | per-combo retries (default 2) |
 | `--concurrency N` | homepage-audit parallelism (default 3) |
 | `--verbose` | per-card detail |
+
+**Multi-value inputs (`--cities` / `--niches`).** Each `"City, ST"` contains a
+comma, so a plain comma list is ambiguous (`"San Antonio, TX, Fort Worth, TX"`
+used to split into four bogus values, and even `"San Antonio, TX"` into two).
+Separate multiple values with **` | `** or **`;`** — the inner comma is kept,
+so each value stays whole:
+
+```sh
+--cities  "San Antonio, TX | Fort Worth, TX"
+--cities  "San Antonio, TX;Fort Worth, TX"
+--niches  "Junk Removal | Roofing"
+```
+
+Repeating the flag appends too:
+`--cities "San Antonio, TX" --cities "Fort Worth, TX"`. A single `"City, ST"`
+stays whole; a plain comma list with no inner commas (e.g.
+`--niches "Junk Removal, Roofing"`) still splits as before.
 
 Exit codes: `0` ran (partial failures OK), `1` nothing extracted / fatal,
 `2` bad usage.

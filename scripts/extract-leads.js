@@ -27,8 +27,11 @@
  *   node scripts/extract-leads.js [options]
  *
  * Options:
- *   --cities "San Antonio, TX, Dallas, TX"   override config cities
- *   --niches "Junk Removal, Roofing"         override config niches
+ *   --cities "San Antonio, TX | Fort Worth, TX"  override config cities
+ *              (separate multiple "City, ST" with ' | ' or ';', or repeat
+ *               the flag: --cities "San Antonio, TX" --cities "Fort Worth, TX")
+ *   --niches  "Junk Removal | Roofing"           override config niches
+ *              (or comma-separated when each value has no inner comma)
  *   --limit N            max businesses extracted per (city, niche) combo
  *                        (smoke tests: --limit 3)
  *   --dry-run            extract + normalize + audit only; print JSON rows to
@@ -79,19 +82,43 @@ function loadEnvFile(p) {
   }
 }
 
+// Split a --cities/--niches value into a list. Multi-item inputs are
+// unambiguous when separated by ';' or ' | ' — each item keeps any internal
+// comma, so `--cities "San Antonio, TX | Fort Worth, TX"` yields two whole
+// "City, ST" values (and the `--cities "San Antonio, TX;Fort Worth, TX"`
+// form works too). For a plain comma-separated list (no ';'/'|') we fall back
+// to splitting on commas, but merge adjacent "City, ST" pairs so the single
+// `--cities "San Antonio, TX"` stays ONE value instead of two bogus ones
+// ("San Antonio" + "TX"). A plain list like `--niches "Junk Removal, Roofing"`
+// still splits into two. Repeated `--cities`/`--niches` flags append (also
+// supported by parseArgs).
+const STATE_RE = /^(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)$/i;
+function splitList(value) {
+  const parts = value.split(/[|;]/).map((s) => s.trim()).filter(Boolean);
+  if (parts.length > 1) return parts; // explicit delimiter → each item stays whole
+  const tokens = value.split(',').map((s) => s.trim()).filter(Boolean);
+  const merged = [];
+  for (const t of tokens) {
+    if (STATE_RE.test(t) && merged.length) {
+      merged[merged.length - 1] = `${merged[merged.length - 1]}, ${t}`;
+    } else {
+      merged.push(t);
+    }
+  }
+  return merged;
+}
 function parseArgs(argv) {
   const opts = {
     cities: null, niches: null, limit: null, dryRun: false, batch: null,
     config: DEFAULT_CONFIG, audit: true, includeGood: false,
     retries: 2, concurrency: 3, verbose: false,
   };
-  const splitList = (v) => v.split(',').map((s) => s.trim()).filter(Boolean);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => argv[++i];
     switch (a) {
-      case '--cities': opts.cities = splitList(next()); break;
-      case '--niches': opts.niches = splitList(next()); break;
+      case '--cities': (opts.cities = opts.cities || []).push(...splitList(next())); break;
+      case '--niches': (opts.niches = opts.niches || []).push(...splitList(next())); break;
       case '--limit': opts.limit = parseInt(next(), 10); break;
       case '--dry-run': opts.dryRun = true; break;
       case '--batch': opts.batch = next(); break;
@@ -642,6 +669,7 @@ if (require.main === module) {
   });
 }
 
-// Export the audit primitives so tests/harnesses can exercise the timeout
-// behaviour directly (requiring this file no longer runs the sweep).
-module.exports = { fetchHead, auditUrl, auditWebsite };
+// Export the audit primitives + CLI/value parser so tests/harnesses can
+// exercise the timeout behaviour and multi-value parsing directly (requiring
+// this file no longer runs the sweep).
+module.exports = { fetchHead, auditUrl, auditWebsite, parseArgs, splitList };

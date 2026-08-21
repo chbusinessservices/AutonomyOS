@@ -24,11 +24,11 @@ on:
   workflow_dispatch:
     inputs:
       cities:
-        description: 'Comma-separated cities, e.g. "San Antonio, TX, Dallas, TX" (default: scripts/config.json)'
+        description: 'Cities separated by " | " (or ";"), each "City, ST" whole, e.g. "San Antonio, TX | Fort Worth, TX" (default: scripts/config.json)'
         required: false
         type: string
       niches:
-        description: 'Comma-separated niches, e.g. "Junk Removal, Roofing" (default: scripts/config.json)'
+        description: 'Niches separated by " | " (or ";"), or comma-separated when each has no inner comma, e.g. "Junk Removal | Roofing" (default: scripts/config.json)'
         required: false
         type: string
       limit:
